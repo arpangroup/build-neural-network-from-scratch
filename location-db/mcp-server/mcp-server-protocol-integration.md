@@ -1,0 +1,419 @@
+# MCP Protocol Integration
+
+> **Related Example:** [Function Calling Example](mcp-server-function-calling.md)
+
+## Table of Contents
+
+* [Overview](#overview)
+* [Traditional Function Calling](#traditional-function-calling)
+* [MCP-Based Architecture](#mcp-based-architecture)
+* [Option 1: OpenAI Agents SDK (Recommended)](#option-1-openai-agents-sdk-recommended)
+
+  * [Install Dependencies](#install-dependencies)
+  * [Weather MCP Server](#weather-mcp-server)
+  * [Stock MCP Server](#stock-mcp-server)
+  * [Start the Servers](#start-the-servers)
+  * [Client Example](#client-example)
+  * [What the SDK Handles Automatically](#what-the-sdk-handles-automatically)
+* [Option 2: Chat Completions API](#option-2-chat-completions-api)
+
+  * [Architecture Flow](#architecture-flow)
+  * [Step 1: Connect to MCP](#step-1-connect-to-mcp)
+  * [Step 2: Discover Available Tools](#step-2-discover-available-tools)
+  * [Step 3: Convert MCP Tools to OpenAI Tool Schema](#step-3-convert-mcp-tools-to-openai-tool-schema)
+  * [Step 4: Send Tools to the Model](#step-4-send-tools-to-the-model)
+  * [Step 5: Execute Tool Calls Through MCP](#step-5-execute-tool-calls-through-mcp)
+  * [Minimal Change Version](#minimal-change-version)
+* [When Should You Use MCP?](#when-should-you-use-mcp)
+
+---
+
+## Overview
+
+The **Model Context Protocol (MCP)** provides a standardized way for LLMs to discover and invoke tools exposed by external services.
+
+Instead of manually defining tool schemas and implementing tool routing logic, MCP allows tools to be dynamically discovered from MCP servers.
+
+---
+
+## Traditional Function Calling
+
+In a standard function-calling setup:
+
+```text
+LLM
+  └── Function Calling
+         ├── get_weather()
+         └── get_stock_price()
+```
+
+The tools are:
+
+* Hardcoded inside the application
+* Manually defined using JSON schemas
+* Passed through the `tools=` parameter
+
+---
+
+## MCP-Based Architecture
+
+With MCP:
+
+```text
+LLM Client
+     │
+     ├── MCP Server (Weather)
+     │        └── get_weather
+     │
+     └── MCP Server (Stocks)
+              └── get_stock_price
+```
+
+### Key Difference
+
+The model discovers tools from MCP servers dynamically instead of requiring manually maintained tool definitions.
+
+---
+
+# Option 1: OpenAI Agents SDK (Recommended)
+
+The Agents SDK provides built-in MCP integration and handles most of the complexity automatically.
+
+## Install Dependencies
+
+```bash
+pip install openai-agents mcp
+```
+
+---
+
+## Weather MCP Server
+
+**weather_server.py**
+
+```python
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("weather")
+
+@mcp.tool()
+def get_weather(city: str):
+    weather_data = {
+        "delhi": "15°C",
+        "mumbai": "12°C",
+        "kolkata": "10°C",
+        "hyderabad": "20°C",
+        "bangalore": "18°C"
+    }
+
+    return weather_data.get(
+        city.lower(),
+        "Weather data not available"
+    )
+
+if __name__ == "__main__":
+    mcp.run()
+```
+
+---
+
+## Stock MCP Server
+
+**stock_server.py**
+
+```python
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("stocks")
+
+@mcp.tool()
+def get_stock_price(company: str):
+    stock_data = {
+        "apple": "100",
+        "microsoft": "200",
+        "google": "150",
+        "meta": "180",
+        "nimbus": "120"
+    }
+
+    return stock_data.get(
+        company.lower(),
+        "Stock data not available"
+    )
+
+if __name__ == "__main__":
+    mcp.run()
+```
+
+---
+
+## Start the Servers
+
+```bash
+python weather_server.py
+python stock_server.py
+```
+
+---
+
+## Client Example
+
+```python
+import asyncio
+
+from agents import Agent, Runner
+from agents.mcp import MCPServerStdio
+
+async def main():
+
+    weather_server = MCPServerStdio(
+        params={
+            "command": "python",
+            "args": ["weather_server.py"]
+        }
+    )
+
+    stock_server = MCPServerStdio(
+        params={
+            "command": "python",
+            "args": ["stock_server.py"]
+        }
+    )
+
+    agent = Agent(
+        name="Assistant",
+        model="gpt-4.1-mini",
+        mcp_servers=[
+            weather_server,
+            stock_server
+        ]
+    )
+
+    result = await Runner.run(
+        agent,
+        "Get Hyderabad weather and Nimbus stock price"
+    )
+
+    print(result.final_output)
+
+asyncio.run(main())
+```
+
+---
+
+## What the SDK Handles Automatically
+
+The Agents SDK:
+
+1. Connects to MCP servers
+2. Discovers available tools
+3. Generates tool schemas
+4. Executes tool calls
+5. Sends tool results back to the model
+6. Produces the final response
+
+> No manual `tool_messages` handling is required.
+
+---
+
+# Option 2: Chat Completions API
+
+If you want to keep your existing:
+
+```python
+client.chat.completions.create(...)
+```
+
+workflow, MCP can act as a dynamic tool registry.
+
+---
+
+## Architecture Flow
+
+```text
+User
+ ↓
+ChatCompletion
+ ↓
+Tool Call Request
+ ↓
+MCP Client
+ ↓
+MCP Server
+ ↓
+Tool Result
+ ↓
+ChatCompletion
+ ↓
+Final Answer
+```
+
+---
+
+## Step 1: Connect to MCP
+
+```python
+from mcp import ClientSession
+from mcp.client.stdio import stdio_client
+```
+
+---
+
+## Step 2: Discover Available Tools
+
+```python
+tools = await session.list_tools()
+```
+
+Example response:
+
+```python
+[
+    {
+        "name": "get_weather",
+        "description": "...",
+        "inputSchema": {...}
+    },
+    {
+        "name": "get_stock_price",
+        "description": "...",
+        "inputSchema": {...}
+    }
+]
+```
+
+---
+
+## Step 3: Convert MCP Tools to OpenAI Tool Schema
+
+```python
+openai_tools = []
+
+for tool in mcp_tools:
+    openai_tools.append({
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.inputSchema
+        }
+    })
+```
+
+---
+
+## Step 4: Send Tools to the Model
+
+```python
+response = client.chat.completions.create(
+    model="gpt-4.1-mini",
+    messages=messages,
+    tools=openai_tools
+)
+```
+
+---
+
+## Step 5: Execute Tool Calls Through MCP
+
+Instead of manually routing tool calls:
+
+```python
+if function_name == "get_weather":
+    result = get_weather(arguments["city"])
+
+elif function_name == "get_stock_price":
+    result = get_stock_price(arguments["company"])
+```
+
+execute them dynamically through MCP:
+
+```python
+result = await session.call_tool(
+    function_name,
+    arguments
+)
+```
+
+---
+
+## Minimal Change Version
+
+Replace:
+
+```python
+if function_name == "get_weather":
+    result = get_weather(arguments["city"])
+
+elif function_name == "get_stock_price":
+    result = get_stock_price(arguments["company"])
+```
+
+with:
+
+```python
+result = await mcp_session.call_tool(
+    function_name,
+    arguments
+)
+```
+
+and replace:
+
+```python
+tools = [...]
+```
+
+with:
+
+```python
+tools = mcp_tools_to_openai_schema(
+    await session.list_tools()
+)
+```
+
+This allows your application to discover and execute tools dynamically through MCP.
+
+---
+
+# When Should You Use MCP?
+
+Use MCP when:
+
+✅ Tools live in separate services
+
+✅ Multiple applications need access to the same tools
+
+✅ You want dynamic tool discovery
+
+✅ You expose databases, APIs, file systems, GitHub, Slack, or internal services as tools
+
+✅ You manage dozens or hundreds of tools
+
+---
+
+## When Not to Use MCP
+
+For a small application with only a few helper functions:
+
+```python
+get_weather()
+get_stock_price()
+```
+
+regular function calling is usually simpler and requires less infrastructure.
+
+---
+
+## Summary
+
+| Feature                   | Function Calling | MCP          |
+| ------------------------- | ---------------- | ------------ |
+| Tool Discovery            | Manual           | Automatic    |
+| Schema Definition         | Manual           | Generated    |
+| Tool Routing              | Manual           | Standardized |
+| Tool Reusability          | Limited          | High         |
+| Multi-Application Support | Difficult        | Easy         |
+| Scales to Many Tools      | Poorly           | Well         |
+
+**Rule of Thumb:** Use regular function calling for a handful of local functions. Use MCP when tools become shared services that need to be discovered and consumed by multiple LLM clients.
