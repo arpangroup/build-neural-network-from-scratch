@@ -1,5 +1,7 @@
 # Retrieval-Augmented Generation (RAG) — Complete Step-by-Step Guide with Real-Time Example and Full Python Implementation
 
+<!-- ![alt text](rag.png) -->
+<img src="rag.png" alt="RAG Diagram" width="320" height="240">
 
 ## Vector Database
 - FAISS (Facebook AI Similarity Search)
